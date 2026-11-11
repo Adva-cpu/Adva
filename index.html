@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Split-Bill Widget</title>
+  <style>
+    :root {
+      --tg-theme-bg-color: #ffffff;
+      --tg-theme-text-color: #000000;
+      --tg-theme-button-color: #2481cc;
+      --tg-theme-button-text-color: #ffffff;
+      --tg-theme-hint-color: #999999;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--tg-theme-bg-color);
+      color: var(--tg-theme-text-color);
+      margin: 0; padding: 12px;
+      max-width: 600px; max-height: 600px;
+      box-sizing: border-box; font-size: 14px;
+    }
+    .header { font-weight: bold; font-size: 16px; margin-bottom: 4px; }
+    .subtitle { color: var(--tg-theme-hint-color); font-size: 12px; margin-bottom: 12px; }
+    .item-list { border-bottom: 1px solid #e5e5e5; padding-bottom: 8px; margin-bottom: 8px; }
+    .item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; }
+    .user-chip { 
+      display: inline-block; padding: 4px 8px; margin: 2px; font-size: 11px;
+      border-radius: 12px; background: #eef2f3; cursor: pointer; border: 1px solid transparent;
+    }
+    .user-chip.active { background: #e1f5fe; border-color: var(--tg-theme-button-color); }
+    .summary { font-size: 13px; margin-top: 10px; }
+    .pay-btn {
+      display: block; width: 100%; padding: 10px; margin-top: 12px;
+      background-color: var(--tg-theme-button-color); color: var(--tg-theme-button-text-color);
+      border: none; border-radius: 8px; font-weight: bold; cursor: pointer; text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header" id="bill-title">Ужин в ресторане</div>
+  <div class="subtitle" id="bill-meta">Организатор: Алексей • Всего: 90 TON</div>
+
+  <div class="item-list" id="items-container">
+    <!-- Позиции чека будут генерироваться динамически -->
+  </div>
+
+  <div class="summary" id="my-debt">
+    Ваша доля к оплате: <strong>0 TON</strong>
+  </div>
+
+  <button class="pay-btn" id="pay-action" onclick="handlePayment()">Оплатить через TON Wallet</button>
+
+  <!-- Скрипт Telegram Web App/Widget API -->
+  <script src="https://telegram.org"></script>
+  <script>
+    // Инициализация Telegram API
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
+
+    // Текущий пользователь (из Telegram)
+    const currentUserId = tg?.initDataUnsafe?.user?.id || 999; 
+    const currentUserName = tg?.initDataUnsafe?.user?.first_name || "Вы";
+
+    // Данные чека (обычно приходят из стейта бота)
+    let billData = {
+      total: 90,
+      items: [
+        { id: 1, name: "Пицца", price: 30, splitWith: [111, 222] }, // Массив ID участников
+        { id: 2, name: "Суши", price: 45, splitWith: [222, 333] },
+        { id: 3, name: "Напитки", price: 15, splitWith: [111, 222, 333] }
+      ],
+      users: {
+        111: "Алексей",
+        222: "Мария",
+        333: "Иван",
+        999: "Вы" // Для тестов вне ТГ
+      }
+    };
+
+    function renderWidget() {
+      const container = document.getElementById('items-container');
+      container.innerHTML = '';
+      
+      let myTotalDebt = 0;
+
+      billData.items.forEach(item => {
+        const itemEl = document.createElement('div');
+        itemEl.className = 'item';
+        
+        let chipsHtml = Object.keys(billData.users).map(userId => {
+          const id = parseInt(userId);
+          const isActive = item.splitWith.includes(id);
+          return `<span class="user-chip ${isActive ? 'active' : ''}" onclick="toggleUser(${item.id}, ${id})">${billData.users[id]}</span>`;
+        }).join('');
+
+        const costPerPerson = (item.price / (item.splitWith.length || 1)).toFixed(2);
+        if (item.splitWith.includes(currentUserId)) {
+          myTotalDebt += parseFloat(costPerPerson);
+        }
+
+        itemEl.innerHTML = `
+          <div>
+            <strong>${item.name}</strong> (${item.price} TON)
+            <div style="margin-top:4px;">${chipsHtml}</div>
+          </div>
+          <div style="color:var(--tg-theme-hint-color)">по ${costPerPerson}</div>
+        `;
+        container.appendChild(itemEl);
+      });
+
+      document.getElementById('my-debt').innerHTML = `Ваша доля к оплате: <strong>${myTotalDebt.toFixed(2)} TON</strong>`;
+      
+      // Скрываем кнопку оплаты, если долга нет
+      document.getElementById('pay-action').style.display = myTotalDebt > 0 ? 'block' : 'none';
+    }
+
+    function toggleUser(itemId, userId) {
+      const item = billData.items.find(i => i.id === itemId);
+      if (item.splitWith.includes(userId)) {
+        item.splitWith = item.splitWith.filter(id => id !== userId);
+      } else {
+        item.splitWith.push(userId);
+      }
+      
+      renderWidget();
+
+      // Отправляем новое состояние виджета бэкенду бота
+      if (tg) {
+        tg.sendData(JSON.stringify({
+          action: "update_split",
+          itemId: itemId,
+          userId: userId,
+          current_state: billData.items
+        }));
+      }
+    }
+
+    function handlePayment() {
+      // Инициация нативного платежа
+      if (tg) {
+        tg.sendData(JSON.stringify({
+          action: "trigger_payment",
+          amount: document.getElementById('my-debt').innerText.match(/[\d.]+/)[0]
+        }));
+        tg.close();
+      } else {
+        alert("Имитация платежа в браузере!");
+      }
+    }
+
+    // Первая отрисовка
+    renderWidget();
+  </script>
+</body>
+</html>
